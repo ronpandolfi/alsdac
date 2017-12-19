@@ -1,0 +1,22 @@
+language: python
+python:
+- '3.6'
+branches:
+  only:
+  - master
+sudo: false
+cache:
+  apt: true
+  pip: true
+install:
+- pip install .
+script:
+- pip install pylint
+# always returns exit code 0; Write the errors but not cause failure
+- "pylint xicam --errors-only || :"
+- pip install coverage
+# - coverage run alsdac/test.py
+after_success:
+- pip install codecov --upgrade
+- bash <(curl -s https://codecov.io/bash)
+

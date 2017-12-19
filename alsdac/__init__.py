@@ -15,13 +15,28 @@ BUFSIZE = 16384
 
 ENCODING = 'ascii'
 
-SERVER_ADDRESS = "131.243.81.35"  # Dula's sample stage server
-
-
+# SERVER_ADDRESS = "131.243.81.35"  # Dula's sample stage server
 # SERVER_ADDRESS = "131.243.81.43" # Dula's primary BCS server
+SERVER_ADDRESS = None
 
 
-def get(data):
+def set_server_address(host):
+    global SERVER_ADDRESS
+    SERVER_ADDRESS = host
+
+
+def set_port(port):
+    global PORT
+    PORT = port
+
+
+def get(data: str) -> bytes:
+    """
+    Starts sender and receiver asynchronous sockets. The sender sends a tcp/ip command to the LabView host system. The
+    receiver waits to receive a response.
+
+    """
+
     async def _get(data):
         result = None
 
@@ -64,7 +79,7 @@ def MoveMotor(motorname: str, pos: Union[float, int]) -> bool:
     return bool(get(f'MoveMotor({motorname}, {pos})\r\n'))
 
 
-def ListAIs()->List[str]:
+def ListAIs() -> List[str]:
     return str(get(f'ListAIs\r\n'), ENCODING).split('\r\n')
 
 
@@ -75,19 +90,15 @@ def GetSoftLimits(motorname: str) -> Tuple[float, float]:
 def StartAcquire(time: float, counts: int):
     return bool(get(f'StartAcquire({time},{counts}\r\n'))
 
-def GetMotorStatus(motorname: str) -> bool: # returns true if move complete
+
+def GetMotorStatus(motorname: str) -> bool:  # returns true if move complete
     return get(f'GetMotorStat({motorname})\r\n').startswith(b'Move finished')
     # TODO: also return the datetime as second value
 
-def ListDIOs()->List[str]:
+
+def ListDIOs() -> List[str]:
     return str(get(f'ListDIOs\r\n'), ENCODING).split('\r\n')
 
-def GetFreerun(ainame)->float:
-    return float(get(f'GetFreerun({ainame})\r\n'))
 
-if __name__ == '__main__':
-    GetMotorPos('Loading Stage (um)')
-    MoveMotor('Loading Stage (um)', 1)
-    GetMotorPos('Loading Stage (um)')
-    MoveMotor('Loading Stage (um)', 0)
-    GetMotorPos('Loading Stage (um)')
+def GetFreerun(ainame) -> float:
+    return float(get(f'GetFreerun({ainame})\r\n'))
