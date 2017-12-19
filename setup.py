@@ -22,7 +22,6 @@ setup(
     packages=find_packages(),
     description='Python API over the ALS LabView Data Acquisition and Controls System TCP/IP commands',
     long_description=long_description,
-    package_data=find_packages(),
     # The project's main homepage.
     url='https://github.com/ronpandolfi/alsdac',
     license='BSD (3-clause)',

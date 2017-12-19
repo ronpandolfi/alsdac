@@ -1,5 +1,3 @@
-# echo-client-low-level.py
-
 import sys
 import trio
 from typing import Union, Tuple, List
