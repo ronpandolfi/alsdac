@@ -1,6 +1,7 @@
 import sys
 import trio
 from typing import Union, Tuple, List
+import numpy as np
 
 # arbitrary, but:
 # - must be in between 1024 and 65535
@@ -15,6 +16,7 @@ ENCODING = 'ascii'
 
 # SERVER_ADDRESS = "131.243.81.35"  # Dula's sample stage server
 # SERVER_ADDRESS = "131.243.81.43" # Dula's primary BCS server
+# SERVER_ADDRESS = '131.243.163.42' # Dula's instrumentation lab server
 SERVER_ADDRESS = None
 
 
@@ -52,6 +54,7 @@ def get(data: str) -> bytes:
                 sys.exit()
             nonlocal result
             result = _data
+            print('received:',_data)
 
         # print("parent: connecting to 127.0.0.1:{}".format(PORT))
         with trio.socket.socket() as client_sock:
@@ -88,8 +91,13 @@ def EnableMotor(motorname: str) -> bool:
 
 
 def GetMotor(motorname: str):
-    return (get(f'GetMotor({motorname})\r\n'))
-# TODO: also return the datetime as second value
+    pos, hex, datetime = get(f'GetMotor({motorname})\r\n').split(b' ', 2)
+    pos = float(pos)
+    hex = str(hex, ENCODING)
+    #datetime = datetime.strptime('Jun 1 2005  1:33PM', '%b %d %Y %I:%M%p') the date is nonsense!
+    datetime = str(datetime, ENCODING)
+    return pos, hex, datetime
+    # TODO: fix datetime nonsense
 
 
 def GetMotorPos(motorname: str) -> float:
@@ -105,29 +113,24 @@ def GetSoftLimits(motorname: str) -> Tuple[float, float]:
 
 
 def GetFlyingPositions(motorname: str) -> str:
-    return str(get(f'GetFlyingPositions({motorname})\r\n'))
-
-
-# def GetFlyingPositions(motorname: str) -> array:
-#   return array(get(f'GetFlyingPositions({motorname})\r\n'))
-# TODO: Duplicate calls with differing outputs.
+    return np.frombuffer(get(f'GetFlyingPositions({motorname})\r\n').strip(),dtype=np.single)
+    # TODO: confirm
 
 
 def ListMotors() -> List[str]:
-    return str(get(f'ListMotors\r\n'), ENCODING).split('\r\n')
+    return str(get('ListMotors\r\n'), ENCODING).strip().split('\r\n')
 
 
 def ListPresets() -> List[str]:
-    return str(get(f'ListPresets\r\n'), ENCODING).split('\r\n')
+    return str(get('ListPresets\r\n'), ENCODING).strip().split('\r\n')
 
 
 def ListTrajectories() -> List[str]:
-    return str(get(f'ListTrajectories\r\n'), ENCODING).split('\r\n')
+    return str(get('ListTrajectories\r\n'), ENCODING).strip().split('\r\n')
 
 
 def NumberMotors() -> int:
-    return int(get(f'NumberMotors\r\n'))
-# TODO: f' needed here?
+    return int(get('NumberMotors\r\n'))
 
 
 def MoveMotor(motorname: str, pos: Union[float, int]) -> bool:
@@ -135,11 +138,11 @@ def MoveMotor(motorname: str, pos: Union[float, int]) -> bool:
 
 
 def StopMotor(motorname: str):
-    return get(f'StopMotor({motorname})\r\n')
+    return get(f'StopMotor({motorname})\r\n') == b'Motor Stopped\r\n'
 
 
 def HomeMotor(motorname: str):
-    return get(f'HomeMotor({motorname})\r\n')
+    return get(f'HomeMotor({motorname})\r\n') == b'OK!0 \r\n'
 
 
 def MoveToPreset(presetname: str) -> bool:
