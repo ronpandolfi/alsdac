@@ -68,35 +68,130 @@ def get(data: str) -> bytes:
 
     return trio.run(_get, data)
 
+"""
+Motor Controls.
+"""
+def AtPreset(presetname: str) -> bool:
+    return bool(get(f'AtPreset({presetname})\r\n'))
+
+
+def AtTrajectory(trajname: str) -> bool:
+    return bool(get(f'AtTrajectory({trajname})\r\n'))
+
+
+def DisableMotor(motorname: str) -> bool:
+    return bool(get(f'DisableMotor({motorname})\r\n'))
+
+
+def EnableMotor(motorname: str) -> bool:
+    return bool(get(f'EnableMotor({motorname})\r\n'))
+
+
+def GetMotor(motorname: str):
+    return (get(f'GetMotor({motorname})\r\n'))
+# TODO: also return the datetime as second value
+
 
 def GetMotorPos(motorname: str) -> float:
     return float(get(f'GetMotorPos({motorname})\r\n'))
 
 
-def MoveMotor(motorname: str, pos: Union[float, int]) -> bool:
-    return bool(get(f'MoveMotor({motorname}, {pos})\r\n'))
-
-
-def ListAIs() -> List[str]:
-    return str(get(f'ListAIs\r\n'), ENCODING).split('\r\n')
+def GetMotorStatus(motorname: str) -> bool:  # returns true if move complete
+    return get(f'GetMotorStat({motorname})\r\n').startswith(b'Move finished')
 
 
 def GetSoftLimits(motorname: str) -> Tuple[float, float]:
     return tuple(map(float, get(f'GetSoftLimits({motorname})\r\n').split(b' ')))[:2]  # The 2 just makes pylint happy :)
 
 
-def StartAcquire(time: float, counts: int):
-    return bool(get(f'StartAcquire({time},{counts}\r\n'))
+def GetFlyingPositions(motorname: str) -> str:
+    return str(get(f'GetFlyingPositions({motorname})\r\n'))
 
 
-def GetMotorStatus(motorname: str) -> bool:  # returns true if move complete
-    return get(f'GetMotorStat({motorname})\r\n').startswith(b'Move finished')
-    # TODO: also return the datetime as second value
+# def GetFlyingPositions(motorname: str) -> array:
+#   return array(get(f'GetFlyingPositions({motorname})\r\n'))
+# TODO: Duplicate calls with differing outputs.
+
+
+def ListMotors() -> List[str]:
+    return str(get(f'ListMotors\r\n'), ENCODING).split('\r\n')
+
+
+def ListPresets() -> List[str]:
+    return str(get(f'ListPresets\r\n'), ENCODING).split('\r\n')
+
+
+def ListTrajectories() -> List[str]:
+    return str(get(f'ListTrajectories\r\n'), ENCODING).split('\r\n')
+
+
+def NumberMotors() -> int:
+    return int(get(f'NumberMotors\r\n'))
+# TODO: f' needed here?
+
+
+def MoveMotor(motorname: str, pos: Union[float, int]) -> bool:
+    return bool(get(f'MoveMotor({motorname}, {pos})\r\n'))
+
+
+def StopMotor(motorname: str):
+    return get(f'StopMotor({motorname})\r\n')
+
+
+def HomeMotor(motorname: str):
+    return get(f'HomeMotor({motorname})\r\n')
+
+
+def MoveToPreset(presetname: str) -> bool:
+    return bool(get(f'MoveToPreset({presetname})\r\n'))
+
+
+def MoveToTrajectory(trajname: str) -> bool:
+    return bool(get(f'MoveToTrajectory({trajname})\r\n'))
+
+
+def SetBreakpoints(motorname: str, first_bp: float, bp_step: float, num_points: int):
+    return get(f'SetBreakpoints({motorname}, {first_bp}, {bp_step}, {num_points})\r\n')
+
+
+# def SetBreakpointRegions(motorname: str, first_bp: float, num_points: int):
+#     return get(f'SetBreakpoints({motorname}, {first_bp}, {num_points})\r\n')
+# TODO: Set multiple breakpoints in get call.
+
+
+def DisableBreakpoints(motorname: str) -> bool:
+    return bool(get(f'DisableBreakpoints({motorname})\r\n'))
+
+
+def GetMotorVelocity(motorname: str) -> float:
+    return float(get(f'GetMotorVelocity({motorname})\r\n'))
+
+
+def GetOrigMotorVelocity(motorname: str) -> float:
+    return float(get(f'GetOrigMotorVelocity({motorname})\r\n'))
+
+
+def SetMotorVelocity(motorname: str, vel: float) -> float:
+    return float(get(f'GetMotorVelocity({motorname}, {vel})\r\n'))
+
+
+# def MoveAllMotors(motorname1, posn1, motorname2, pos2):
+#     return get(f'MoveAllMotors({motorname1}, {posn1}, {motorname2}, {posn2})\r\n')
+# TODO: Set multiple motornames/positions in get call.
+"""
+AI/DIO Controls
+"""
+def GetFreerun(ainame) -> float:
+    return float(get(f'GetFreerun({ainame})\r\n'))
+
+
+def ListAIs() -> List[str]:
+    return str(get(f'ListAIs\r\n'), ENCODING).split('\r\n')
 
 
 def ListDIOs() -> List[str]:
     return str(get(f'ListDIOs\r\n'), ENCODING).split('\r\n')
 
 
-def GetFreerun(ainame) -> float:
-    return float(get(f'GetFreerun({ainame})\r\n'))
+def StartAcquire(time: float, counts: int):
+    return bool(get(f'StartAcquire({time},{counts}\r\n'))
