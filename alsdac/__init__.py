@@ -2,6 +2,9 @@ import sys
 import trio
 from typing import Union, Tuple, List
 import numpy as np
+import re
+from operator import itemgetter, mul
+from functools import reduce
 
 # arbitrary, but:
 # - must be in between 1024 and 65535
@@ -10,14 +13,16 @@ import numpy as np
 PORT = 55000
 # How much memory to spend (at most) on each call to recv. Pretty arbitrary,
 # but shouldn't be too big or too small.
-BUFSIZE = 16384
+BUFSIZE = 163840
 
 ENCODING = 'ascii'
 
 # SERVER_ADDRESS = "131.243.81.35"  # Dula's sample stage server
 # SERVER_ADDRESS = "131.243.81.43" # Dula's primary BCS server
-# SERVER_ADDRESS = '131.243.163.42' # Dula's instrumentation lab server
-SERVER_ADDRESS = None
+SERVER_ADDRESS = '131.243.163.42'  # Dula's instrumentation lab server
+
+
+# SERVER_ADDRESS = None
 
 
 def set_server_address(host):
@@ -28,6 +33,13 @@ def set_server_address(host):
 def set_port(port):
     global PORT
     PORT = port
+
+def stream_size(b):
+    m = re.match(b'(?P<_0>\d*) Points by (?P<_1>\d*) channels', b)
+    if m:
+        map(itemgetter(1), sorted(m.groupdict().items()))
+        return map(int,m.groups())
+    return None, None
 
 
 def get(data: str) -> bytes:
@@ -45,16 +57,23 @@ def get(data: str) -> bytes:
             # print("sender: sending {!r}".format(data))
             await client_sock.send_all(bytes(data, ENCODING))
 
-        async def receiver(client_sock):
+        async def receiver(client_sock:trio.SocketStream):
             # print("receiver: started!")
             _data = await client_sock.receive_some(BUFSIZE)
+
+            expcols, exprows = stream_size(_data)
+
+            if exprows and expcols:
+                while not _data.endswith(b'\r\n\r\n'):
+                    _data += await client_sock.receive_some(BUFSIZE)
+
             # print("receiver: got data {!r}".format(_data))
             if not data:
                 # print("receiver: connection closed")
                 sys.exit()
             nonlocal result
             result = _data
-            print('received:',_data)
+            print('received:', _data)
 
         # print("parent: connecting to 127.0.0.1:{}".format(PORT))
         with trio.socket.socket() as client_sock:
@@ -71,9 +90,12 @@ def get(data: str) -> bytes:
 
     return trio.run(_get, data)
 
+
 """
 Motor Controls.
 """
+
+
 def AtPreset(presetname: str) -> bool:
     return bool(get(f'AtPreset({presetname})\r\n'))
 
@@ -94,7 +116,7 @@ def GetMotor(motorname: str):
     pos, hex, datetime = get(f'GetMotor({motorname})\r\n').split(b' ', 2)
     pos = float(pos)
     hex = str(hex, ENCODING)
-    #datetime = datetime.strptime('Jun 1 2005  1:33PM', '%b %d %Y %I:%M%p') the date is nonsense!
+    # datetime = datetime.strptime('Jun 1 2005  1:33PM', '%b %d %Y %I:%M%p') the date is nonsense!
     datetime = str(datetime, ENCODING)
     return pos, hex, datetime
     # TODO: fix datetime nonsense
@@ -113,7 +135,7 @@ def GetSoftLimits(motorname: str) -> Tuple[float, float]:
 
 
 def GetFlyingPositions(motorname: str) -> str:
-    return np.frombuffer(get(f'GetFlyingPositions({motorname})\r\n').strip(),dtype=np.single)
+    return np.frombuffer(get(f'GetFlyingPositions({motorname})\r\n').strip(), dtype=np.single)
     # TODO: confirm
 
 
@@ -184,17 +206,52 @@ def SetMotorVelocity(motorname: str, vel: float) -> float:
 """
 AI/DIO Controls
 """
+
+
 def GetFreerun(ainame) -> float:
     return float(get(f'GetFreerun({ainame})\r\n'))
 
 
 def ListAIs() -> List[str]:
-    return str(get(f'ListAIs\r\n'), ENCODING).split('\r\n')
+    return str(get('ListAIs\r\n'), ENCODING).strip().split('\r\n')
 
 
 def ListDIOs() -> List[str]:
-    return str(get(f'ListDIOs\r\n'), ENCODING).split('\r\n')
+    return str(get('ListDIOs\r\n'), ENCODING).strip().split('\r\n')
 
 
 def StartAcquire(time: float, counts: int):
     return bool(get(f'StartAcquire({time},{counts}\r\n'))
+
+
+"""
+Instruments
+"""
+
+
+def GetInstrumentStatus(instrumentname) -> List[str]:
+    return str(get(f'GetInstrumentStatus({instrumentname})\r\n'), ENCODING).strip().split('\r\n')
+
+
+def ListInstruments() -> List[str]:
+    return str(get('ListInstruments\r\n'), ENCODING).strip().split('\r\n')
+
+
+def StartInstrumentAcquire(instrumentname, time):
+    return str(get(f'StartInstrumentAcquire({instrumentname}, {time})\r\n'))
+
+
+def GetInstrumentAcquired1D(instrumentname):
+    return str(get(f'GetInstrumentAcquired1D({instrumentname})\r\n'))
+
+
+def GetInstrumentAcquired2D(instrumentname):
+    b=get(f'GetInstrumentAcquired2D({instrumentname})\r\n')
+    expcols, exprows = stream_size(b)
+    s=str(b, ENCODING)
+    arr = np.fromstring(s.split('\r\n',maxsplit=1)[1].replace('\r\n','\t'), count=expcols*exprows, sep='\t', dtype=int)
+    return arr.reshape((exprows, expcols))
+
+
+def GetInstrumentAcquired3D(instrumentname):
+    return str(get(f'GetInstrumentAcquired3D({instrumentname})\r\n'))
