@@ -46,12 +46,12 @@ def Motor(name):
     return Motor
 
 class Beamline(PVGroup):
-    @SubGroup(prefix='motors')
+    @SubGroup(prefix='motors:')
     class Motors(PVGroup):
         names = alsdac.ListMotors()
-        motors={}
         for name in names:
-            motors[name] = SubGroup(Motor(name), prefix=name)
+            locals()[name] = SubGroup(Motor(name), prefix=name+'.')
+
 
 if __name__ == '__main__':
     ioc_options, run_options = ioc_arg_parser(
