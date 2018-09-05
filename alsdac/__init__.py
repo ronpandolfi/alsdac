@@ -17,9 +17,9 @@ BUFSIZE = 163840
 
 ENCODING = 'ascii'
 
-# SERVER_ADDRESS = "131.243.81.35"  # Dula's sample stage server
+SERVER_ADDRESS = "131.243.81.35"  # Dula's sample stage server
 # SERVER_ADDRESS = "131.243.81.43" # Dula's primary BCS server
-SERVER_ADDRESS = '131.243.163.42'  # Dula's instrumentation lab server
+# SERVER_ADDRESS = '131.243.163.42'  # Dula's instrumentation lab server
 
 
 # SERVER_ADDRESS = None
