@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 from caproto.server import (pvproperty, PVGroup, SubGroup,
                             ioc_arg_parser, run)
-import numpy as np
-import functools
+
 import alsdac
 
+def Instrument(name):
+    class Instrument(PVGroup):
+        @SubGroup(prefix='cam1.')
+        class Camera(PVGroup):
+            blah = pvproperty(value=[0], dtype=float)
+    return Instrument
 
 def AnalogInput(name):
     class AnalogInput(PVGroup):
-        value = pvproperty(value=[0],
-                         dtype=float,
-                         read_only=True)
+        value = pvproperty(value=[0], dtype=float, read_only=True)
 
         @value.getter
         async def value(self, instance):
@@ -60,6 +63,13 @@ def Motor(name):
     return Motor
 
 class Beamline(PVGroup):
+
+    @SubGroup(prefix='instruments:')
+    class Detectors(PVGroup):
+        names = alsdac.ListInstruments()
+        for name in names:
+            locals()[name] = SubGroup(Instrument(name), prefix=name+':')
+
     @SubGroup(prefix='ais:')
     class AnalogInputs(PVGroup):
         names = alsdac.ListAIs()
@@ -86,3 +96,4 @@ if __name__ == '__main__':
     # import ophyd
     # a = ophyd.EpicsSignal('beamline:motors:fake.RBV','beamline:m1:VAL')
     # b = ophyd.EpicsMotor('beamline:motors:fake', name='fake')
+    # c = ophyd.
