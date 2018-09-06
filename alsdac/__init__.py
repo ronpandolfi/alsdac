@@ -4,7 +4,7 @@ from typing import Union, Tuple, List
 import numpy as np
 import re
 from operator import itemgetter, mul
-from functools import reduce
+from functools import reduce, wraps
 
 # arbitrary, but:
 # - must be in between 1024 and 65535
@@ -21,6 +21,7 @@ SERVER_ADDRESS = "131.243.81.35"  # Dula's sample stage server
 # SERVER_ADDRESS = "131.243.81.43" # Dula's primary BCS server
 # SERVER_ADDRESS = '131.243.163.42'  # Dula's instrumentation lab server
 
+READ_ONLY = True
 
 # SERVER_ADDRESS = None
 
@@ -55,6 +56,7 @@ def get(data: str) -> bytes:
         async def sender(client_sock, data):
             # print("sender: started!")
             # print("sender: sending {!r}".format(data))
+            print('sent:', data.strip())
             await client_sock.send_all(bytes(data, ENCODING))
 
         async def receiver(client_sock:trio.SocketStream):
@@ -73,7 +75,7 @@ def get(data: str) -> bytes:
                 sys.exit()
             nonlocal result
             result = _data
-            print('received:', _data)
+            print('received:', str(_data, ENCODING).strip())
 
         # print("parent: connecting to 127.0.0.1:{}".format(PORT))
         with trio.socket.socket() as client_sock:
@@ -90,6 +92,16 @@ def get(data: str) -> bytes:
 
     return trio.run(_get, data)
 
+def write_required(func):
+    @wraps(func)
+    def execute_if_write_permitted(*args, **kwargs):
+        if READ_ONLY:
+            raise PermissionError('Write access is disabled by default to prevent mishaps.\n'
+                                  'To enable write access set alsdac.READ_ONLY = FALSE')
+        else:
+            return func(*args, **kwargs)
+    return execute_if_write_permitted
+
 
 """
 Motor Controls.
@@ -103,11 +115,11 @@ def AtPreset(presetname: str) -> bool:
 def AtTrajectory(trajname: str) -> bool:
     return bool(get(f'AtTrajectory({trajname})\r\n'))
 
-
+@write_required
 def DisableMotor(motorname: str) -> bool:
     return bool(get(f'DisableMotor({motorname})\r\n'))
 
-
+@write_required
 def EnableMotor(motorname: str) -> bool:
     return bool(get(f'EnableMotor({motorname})\r\n'))
 
@@ -154,27 +166,27 @@ def ListTrajectories() -> List[str]:
 def NumberMotors() -> int:
     return int(get('NumberMotors\r\n'))
 
-
+@write_required
 def MoveMotor(motorname: str, pos: Union[float, int]) -> bool:
     return bool(get(f'MoveMotor({motorname}, {pos})\r\n'))
 
-
+@write_required
 def StopMotor(motorname: str):
     return get(f'StopMotor({motorname})\r\n') == b'Motor Stopped\r\n'
 
-
+@write_required
 def HomeMotor(motorname: str):
     return get(f'HomeMotor({motorname})\r\n') == b'OK!0 \r\n'
 
-
+@write_required
 def MoveToPreset(presetname: str) -> bool:
     return bool(get(f'MoveToPreset({presetname})\r\n'))
 
-
+@write_required
 def MoveToTrajectory(trajname: str) -> bool:
     return bool(get(f'MoveToTrajectory({trajname})\r\n'))
 
-
+@write_required
 def SetBreakpoints(motorname: str, first_bp: float, bp_step: float, num_points: int):
     return get(f'SetBreakpoints({motorname}, {first_bp}, {bp_step}, {num_points})\r\n')
 
@@ -183,7 +195,7 @@ def SetBreakpoints(motorname: str, first_bp: float, bp_step: float, num_points: 
 #     return get(f'SetBreakpoints({motorname}, {first_bp}, {num_points})\r\n')
 # TODO: Set multiple breakpoints in get call.
 
-
+@write_required
 def DisableBreakpoints(motorname: str) -> bool:
     return bool(get(f'DisableBreakpoints({motorname})\r\n'))
 
@@ -195,7 +207,7 @@ def GetMotorVelocity(motorname: str) -> float:
 def GetOrigMotorVelocity(motorname: str) -> float:
     return float(get(f'GetOrigMotorVelocity({motorname})\r\n'))
 
-
+@write_required
 def SetMotorVelocity(motorname: str, vel: float) -> float:
     return float(get(f'GetMotorVelocity({motorname}, {vel})\r\n'))
 
@@ -219,7 +231,7 @@ def ListAIs() -> List[str]:
 def ListDIOs() -> List[str]:
     return str(get('ListDIOs\r\n'), ENCODING).strip().split('\r\n')
 
-
+@write_required
 def StartAcquire(time: float, counts: int):
     return bool(get(f'StartAcquire({time},{counts}\r\n'))
 
@@ -236,7 +248,7 @@ def GetInstrumentStatus(instrumentname) -> List[str]:
 def ListInstruments() -> List[str]:
     return str(get('ListInstruments\r\n'), ENCODING).strip().split('\r\n')
 
-
+@write_required
 def StartInstrumentAcquire(instrumentname, time):
     return str(get(f'StartInstrumentAcquire({instrumentname}, {time})\r\n'))
 
