@@ -5,6 +5,7 @@ import numpy as np
 import re
 from operator import itemgetter, mul
 from functools import reduce, wraps
+import os
 
 # arbitrary, but:
 # - must be in between 1024 and 65535
@@ -17,11 +18,11 @@ BUFSIZE = 163840
 
 ENCODING = 'ascii'
 
-SERVER_ADDRESS = "131.243.81.35"  # Dula's sample stage server
+# SERVER_ADDRESS = "131.243.81.35"  # Dula's sample stage server
 # SERVER_ADDRESS = "131.243.81.43" # Dula's primary BCS server
-# SERVER_ADDRESS = '131.243.163.42'  # Dula's instrumentation lab server
+SERVER_ADDRESS = '131.243.163.42'  # Dula's instrumentation lab server
 
-READ_ONLY = True
+READ_ONLY = os.environ.get('ALSDAC_READ_ONLY', True)
 
 # SERVER_ADDRESS = None
 
@@ -60,7 +61,6 @@ def get(data: str) -> bytes:
             await client_sock.send_all(bytes(data, ENCODING))
 
         async def receiver(client_sock:trio.SocketStream):
-            # print("receiver: started!")
             _data = await client_sock.receive_some(BUFSIZE)
 
             expcols, exprows = stream_size(_data)
@@ -69,23 +69,18 @@ def get(data: str) -> bytes:
                 while not _data.endswith(b'\r\n\r\n'):
                     _data += await client_sock.receive_some(BUFSIZE)
 
-            # print("receiver: got data {!r}".format(_data))
             if not data:
-                # print("receiver: connection closed")
                 sys.exit()
             nonlocal result
             result = _data
             print('received:', str(_data, ENCODING).strip())
 
-        # print("parent: connecting to 127.0.0.1:{}".format(PORT))
         with trio.socket.socket() as client_sock:
             await client_sock.connect((SERVER_ADDRESS, PORT))
             client_sock = trio.SocketStream(client_sock)
             async with trio.open_nursery() as nursery:
-                # print("parent: spawning sender...")
                 nursery.start_soon(sender, client_sock, data)
 
-                # print("parent: spawning receiver...")
                 nursery.start_soon(receiver, client_sock)
 
         return result
@@ -97,7 +92,7 @@ def write_required(func):
     def execute_if_write_permitted(*args, **kwargs):
         if READ_ONLY:
             raise PermissionError('Write access is disabled by default to prevent mishaps.\n'
-                                  'To enable write access set alsdac.READ_ONLY = FALSE')
+                                  'To enable write access set alsdac.READ_ONLY = False')
         else:
             return func(*args, **kwargs)
     return execute_if_write_permitted
