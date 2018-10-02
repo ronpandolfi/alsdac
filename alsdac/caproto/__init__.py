@@ -4,7 +4,9 @@ from caproto.server import (pvproperty, PVGroup, SubGroup,
 from caproto._dbr import ChannelType
 
 import alsdac
+import time
 import numpy as np
+import trio
 
 class LVGroup(PVGroup):
     @property
@@ -120,10 +122,50 @@ class Motor(LVGroup):  # MotorFields
 
     @RBV.getter
     async def RBV(self, instance):
-        return alsdac.GetMotorPos(self.devicename)
+        return alsdac.GetMotorPos_async(self.devicename, get=self.parent.parent.get)
+
+
+async def sender(client_sock, data):
+    # print("sender: started!")
+    # print("sender: sending {!r}".format(data))
+    print('sent:', data.strip())
+    await client_sock.send_all(bytes(data, alsdac.ENCODING))
+
+async def receiver(client_sock:trio.SocketStream):
+    _data = await client_sock.receive_some(alsdac.BUFSIZE)
+
+    expcols, exprows = alsdac.stream_size(_data)
+
+    if exprows and expcols:
+        while not _data.endswith(b'\r\n\r\n'):
+            _data += await client_sock.receive_some(alsdac.BUFSIZE)
+    result = _data
+    print('received:', str(_data, alsdac.ENCODING).strip())
+    return result
 
 
 class Beamline(PVGroup):
+    def __init__(self, *args, **kwargs):
+        super(Beamline, self).__init__(*args, **kwargs)
+        self._socket = trio.socket.socket()
+        self._lock = trio.Lock()
+        self._socket_stream = None
+
+
+    dummy = pvproperty()
+
+    @dummy.startup
+    def dummy(self, instance, async_lib):
+        await self._socket.connect((alsdac.SERVER_ADDRESS, alsdac.PORT))
+        self._socket_stream = trio.SocketStream(self._socket)
+
+    async def get(self, cmd):
+        with self._lock:
+            await sender(self._socket_stream, cmd)
+            result = await receiver(self._socket_stream)
+            return result
+
+
     @SubGroup(prefix='instruments:')
     class Detectors(LVGroup):
         names = alsdac.ListInstruments()

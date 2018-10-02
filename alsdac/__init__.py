@@ -44,6 +44,8 @@ def stream_size(b):
     return None, None
 
 
+# FIXME: Make sends/receives happen from a threaded hot loop,
+
 def get(data: str) -> bytes:
     """
     Starts sender and receiver asynchronous sockets. The sender sends a tcp/ip command to the LabView host system. The
@@ -128,8 +130,11 @@ def GetMotor(motorname: str):
     return pos, hex, datetime
     # TODO: fix datetime nonsense
 
+async def GetMotorPos_async(motorname:str, get) -> float:
+    return GetMotorPos(motorname, get=get)
 
-def GetMotorPos(motorname: str) -> float:
+
+def GetMotorPos(motorname: str, get=get) -> float:
     return float(get(f'GetMotorPos({motorname})\r\n'))
 
 
