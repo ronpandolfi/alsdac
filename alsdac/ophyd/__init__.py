@@ -15,8 +15,8 @@ class Instrument(Device):
     def read(self):
         # while True:
         #     try:
-        shape = self.size_x.get(), self.size_y.get()
         d = super(Instrument, self).read()
+        shape = self.size_x.get(), self.size_y.get()
         d[f'{self.name}_image']['value'] = d[f'{self.name}_image']['value'].reshape(shape)
         return d
 
