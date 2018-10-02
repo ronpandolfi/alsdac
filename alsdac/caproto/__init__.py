@@ -76,7 +76,7 @@ class Motor(LVGroup):  # MotorFields
     SET = pvproperty(value=[0], dtype=float)
     VELO = pvproperty(value=[0], dtype=float)
     ACCL = pvproperty(value=[0], dtype=float)
-    MOVN = pvproperty(value=[0], dtype=float)
+    MOVN = pvproperty(value=[False], dtype=bool)
     DMOV = pvproperty(value=[0], dtype=float)
     HLS = pvproperty(value=[0], dtype=float)
     LLS = pvproperty(value=[0], dtype=float)
@@ -85,11 +85,13 @@ class Motor(LVGroup):  # MotorFields
     HOMF = pvproperty(value=[0], dtype=float)
     HOMR = pvproperty(value=[0], dtype=float)
     EGU = pvproperty(value='units', dtype=str)
-    VAL = pvproperty(value=[0], dtype=float)
-    RBV = pvproperty(value=[0], dtype=float)
+    VAL = pvproperty(value=[0], dtype=float, precision=3)
+    PREC = pvproperty(value=[3], dtype=int)
+    RBV = pvproperty(value=[0], dtype=float, precision=3)
 
     @VAL.putter
     async def VAL(self, instance, value):
+        await self.MOVN.write([True])
         alsdac.MoveMotor(self.devicename, value[0])
 
     # TODO: LABVIEW TCP interface has no command to get the setpoint; request this addition; fill in getter
@@ -101,6 +103,20 @@ class Motor(LVGroup):  # MotorFields
     #     # that is, with or without this method definition, self.readback.value
     #     # will be returned automatically
     #     return obj._value
+
+    @VAL.startup
+    async def VAL(self, instance, async_lib):
+        'Periodically check if at setpoint'
+        while True:
+            if self.MOVN.value[0]:
+                while True:
+                    _, rbv = await self.RBV.read(ChannelType.FLOAT)
+                    if abs(instance.value[0]-rbv[0]) < 0.0001:  # Threshold
+                        await self.MOVN.write([False])
+                        break
+
+                    await async_lib.library.sleep(.1)
+            await async_lib.library.sleep(.1)
 
     @RBV.getter
     async def RBV(self, instance):
