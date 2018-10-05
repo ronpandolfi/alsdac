@@ -13,7 +13,7 @@ with open(path.join(here, 'README.md'), encoding='utf-8') as f:
 
 setup(
     name='alsdac',
-    version='0.1.0',
+    version='0.2.0',
 
     # Author details
     author='Ronald J Pandolfi',
@@ -49,5 +49,6 @@ setup(
     # What does your project relate to?
     keywords='synchrotron controls beamline hardware data',
 
-    install_requires=['trio'],
+    install_requires=['trio', 'numpy'],
+    python_requires='>=3.6',
 )
