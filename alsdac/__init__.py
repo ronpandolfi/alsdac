@@ -16,10 +16,11 @@ PORT = 55000
 # but shouldn't be too big or too small.
 BUFSIZE = 163840
 
-ENCODING = 'ascii'
+RECEIVE_ENCODING = 'ascii'
+SEND_ENCODING = 'ascii'
 
 # SERVER_ADDRESS = "131.243.81.35"  # Dula's sample stage server
-# SERVER_ADDRESS = "131.243.81.43" # Dula's primary BCS server
+# SERVER_ADDRESS = "131.243.81.43"  # Dula's primary BCS server
 SERVER_ADDRESS = '131.243.163.42'  # Dula's instrumentation lab server
 
 READ_ONLY = os.environ.get('ALSDAC_READ_ONLY', True)
@@ -37,14 +38,15 @@ def set_port(port):
     PORT = port
 
 def stream_size(b):
-    m = re.match(b'(?P<_0>\d*) Points by (?P<_1>\d*) channels', b)
+    m = re.match(b'(?P<_0>\d*) Points by (?P<_1>\d*) channels(?P<_2>[\s\S]*)', b)
     if m:
-        map(itemgetter(1), sorted(m.groupdict().items()))
-        return map(int,m.groups())
-    return None, None
+        rows, cols, data = m.groups()
+        if data.endswith(b'\r\n\r\n'): data = data[:-4]
+        return int(rows), int(cols), data
+    return None, None, None
 
 
-def get(data: str) -> bytes:
+def get(data: str, SEND_ENCODING=SEND_ENCODING, RECEIVE_ENCODING=RECEIVE_ENCODING) -> bytes:
     """
     Starts sender and receiver asynchronous sockets. The sender sends a tcp/ip command to the LabView host system. The
     receiver waits to receive a response.
@@ -58,22 +60,26 @@ def get(data: str) -> bytes:
             # print("sender: started!")
             # print("sender: sending {!r}".format(data))
             print('sent:', data.strip())
-            await client_sock.send_all(bytes(data, ENCODING))
+            await client_sock.send_all(bytes(data, SEND_ENCODING))
 
         async def receiver(client_sock:trio.SocketStream):
-            _data = await client_sock.receive_some(BUFSIZE)
+            _data = []
+            _data.append(await client_sock.receive_some(BUFSIZE))
 
-            expcols, exprows = stream_size(_data)
+            expcols, exprows, _ = stream_size(_data[0])
 
             if exprows and expcols:
-                while not _data.endswith(b'\r\n\r\n'):
-                    _data += await client_sock.receive_some(BUFSIZE)
+                while not _data[-1].endswith(b'\r\n\r\n'):
+                    _data.append(await client_sock.receive_some(BUFSIZE))
+
+            _data = b''.join(_data)
 
             if not data:
                 sys.exit()
             nonlocal result
             result = _data
-            print('received:', str(_data, ENCODING).strip())
+            if RECEIVE_ENCODING:
+                print('received:', str(_data, RECEIVE_ENCODING).strip())
 
         with trio.socket.socket() as client_sock:
             await client_sock.connect((SERVER_ADDRESS, PORT))
@@ -122,9 +128,9 @@ def EnableMotor(motorname: str) -> bool:
 def GetMotor(motorname: str):
     pos, hex, datetime = get(f'GetMotor({motorname})\r\n').split(b' ', 2)
     pos = float(pos)
-    hex = str(hex, ENCODING)
+    hex = str(hex, RECEIVE_ENCODING)
     # datetime = datetime.strptime('Jun 1 2005  1:33PM', '%b %d %Y %I:%M%p') the date is nonsense!
-    datetime = str(datetime, ENCODING)
+    datetime = str(datetime, RECEIVE_ENCODING)
     return pos, hex, datetime
     # TODO: fix datetime nonsense
 
@@ -147,15 +153,15 @@ def GetFlyingPositions(motorname: str) -> str:
 
 
 def ListMotors() -> List[str]:
-    return str(get('ListMotors\r\n'), ENCODING).strip().split('\r\n')
+    return str(get('ListMotors\r\n'), RECEIVE_ENCODING).strip().split('\r\n')
 
 
 def ListPresets() -> List[str]:
-    return str(get('ListPresets\r\n'), ENCODING).strip().split('\r\n')
+    return str(get('ListPresets\r\n'), RECEIVE_ENCODING).strip().split('\r\n')
 
 
 def ListTrajectories() -> List[str]:
-    return str(get('ListTrajectories\r\n'), ENCODING).strip().split('\r\n')
+    return str(get('ListTrajectories\r\n'), RECEIVE_ENCODING).strip().split('\r\n')
 
 
 def NumberMotors() -> int:
@@ -220,11 +226,11 @@ def GetFreerun(ainame) -> float:
 
 
 def ListAIs() -> List[str]:
-    return str(get('ListAIs\r\n'), ENCODING).strip().split('\r\n')
+    return str(get('ListAIs\r\n'), RECEIVE_ENCODING).strip().split('\r\n')
 
 
 def ListDIOs() -> List[str]:
-    return str(get('ListDIOs\r\n'), ENCODING).strip().split('\r\n')
+    return str(get('ListDIOs\r\n'), RECEIVE_ENCODING).strip().split('\r\n')
 
 @write_required
 def StartAcquire(time: float, counts: int):
@@ -237,11 +243,11 @@ Instruments
 
 
 def GetInstrumentStatus(instrumentname) -> List[str]:
-    return str(get(f'GetInstrumentStatus({instrumentname})\r\n'), ENCODING).strip().split('\r\n')
+    return str(get(f'GetInstrumentStatus({instrumentname})\r\n'), RECEIVE_ENCODING).strip().split('\r\n')
 
 
 def ListInstruments() -> List[str]:
-    return str(get('ListInstruments\r\n'), ENCODING).strip().split('\r\n')
+    return str(get('ListInstruments\r\n'), RECEIVE_ENCODING).strip().split('\r\n')
 
 @write_required
 def StartInstrumentAcquire(instrumentname, time):
@@ -254,11 +260,17 @@ def GetInstrumentAcquired1D(instrumentname):
 
 def GetInstrumentAcquired2D(instrumentname):
     b=get(f'GetInstrumentAcquired2D({instrumentname})\r\n')
-    expcols, exprows = stream_size(b)
-    s=str(b, ENCODING)
-    arr = np.fromstring(s.split('\r\n',maxsplit=1)[1].replace('\r\n','\t'), count=expcols*exprows, sep='\t', dtype=int)
+    expcols, exprows, data = stream_size(b)
+    s=str(b, RECEIVE_ENCODING)
+    arr = np.fromstring(s.split('\r\n',maxsplit=1)[1].replace('\r\n', '\t'), count=expcols*exprows, sep='\t', dtype=int)
     return arr.reshape((exprows, expcols))
 
+def GetInstrumentAcquired2DBinary(instrumentname):
+    b = get(f'GetInstrumentAcquired2DBinary({instrumentname})\r\n', RECEIVE_ENCODING='')
+    expcols, exprows, data = stream_size(b)
+    # s = str(b, RECEIVE_ENCODING)
+
+    return np.frombuffer(data, dtype=np.dtype('int32').newbyteorder('>')).reshape((exprows, expcols))
 
 def GetInstrumentAcquired3D(instrumentname):
     return str(get(f'GetInstrumentAcquired3D({instrumentname})\r\n'))
