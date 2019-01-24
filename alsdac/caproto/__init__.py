@@ -161,8 +161,8 @@ class Motor(LVGroup):  # MotorFields
 async def sender(client_sock, data):
     # print("sender: started!")
     # print("sender: sending {!r}".format(data))
-    print('sent:', data.strip())
-    await client_sock.send_all(bytes(data, alsdac.ENCODING))
+    print('sent:', data)
+    await client_sock.send_all(bytes(data))
 
 
 async def receiver(client_sock: trio.SocketStream):
@@ -193,7 +193,7 @@ class Beamline(PVGroup):
 
             self._socket_stream.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
             self._socket_stream.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 1)
-            self._socket_stream.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, .1)
+            self._socket_stream.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 1)
             self._socket_stream.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 10)
             self._socket_stream.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
@@ -205,8 +205,8 @@ class Beamline(PVGroup):
         with self._lock:
             await self.startup_socket()
             print('socket:', self._socket)
-            await sender(await self._socket_stream, cmd)
-            result = await receiver(await self._socket_stream)
+            await sender(self._socket_stream, cmd)
+            result = await receiver(self._socket_stream)
             return result
 
     @SubGroup(prefix='instruments:')
@@ -246,7 +246,7 @@ if __name__ == '__main__':
         desc='als test')
     ioc = Beamline(**ioc_options)
     # run(ioc.pvdb, **run_options)
-    logging.getLogger('caproto').setLevel('DEBUG')
+    # logging.getLogger('caproto').setLevel('DEBUG')
     print(run_options)
     trio.run(main, ioc.pvdb, '--list-pvs' in sys.argv)
 
