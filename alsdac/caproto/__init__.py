@@ -33,7 +33,7 @@ class DynamicLVGroup(LVGroup):
         self.out_db.update(self.pvdb)
 
     async def update(self):
-        device_names = await self.parent.get(self.device_list_message_cls())
+        device_names = (await self.parent.get(self.device_list_message_cls())).data
         self._pvdb.clear()
         self._pvdb.update({f'{name}': self.device_cls(name)
                            for name in device_names})
