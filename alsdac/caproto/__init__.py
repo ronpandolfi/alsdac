@@ -9,6 +9,9 @@ import numpy as np
 import trio
 from alsdac import _sansio
 import socket
+import threading
+from caproto.trio.server import Context
+import logging
 
 
 class LVGroup(PVGroup):
@@ -178,7 +181,7 @@ async def receiver(client_sock: trio.SocketStream):
 class Beamline(PVGroup):
     def __init__(self, *args, **kwargs):
         super(Beamline, self).__init__(*args, **kwargs)
-        self._lock = trio.Lock()
+        self._lock = threading.Lock()
         self._socket = None
         self._socket_stream = None
 
@@ -226,6 +229,9 @@ class Beamline(PVGroup):
         device_list_message_cls = _sansio.ListMotorsRequest
         device_cls = Motor
 
+async def main(pvdb, log_pv_names):
+    ctx = Context(pvdb)
+    return await ctx.run(log_pv_names=log_pv_names)
 
 if __name__ == '__main__':
     import sys
@@ -239,7 +245,10 @@ if __name__ == '__main__':
         default_prefix='beamline:',
         desc='als test')
     ioc = Beamline(**ioc_options)
-    run(ioc.pvdb, **run_options)
+    # run(ioc.pvdb, **run_options)
+    logging.getLogger('caproto').setLevel('DEBUG')
+    print(run_options)
+    trio.run(main, ioc.pvdb, '--list-pvs' in sys.argv)
 
     # # Afterwards, you can connect to these devices like:
     # import os
