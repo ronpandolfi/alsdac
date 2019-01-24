@@ -158,14 +158,14 @@ class Motor(LVGroup):  # MotorFields
         return self.parent.parent.get(_sansio.GetMotorPosResponse(self.devicename))
 
 
-async def sender(client_sock, data):
+async def sender(client_sock, lvs:_sansio.LVS, data):
     # print("sender: started!")
     # print("sender: sending {!r}".format(data))
     print('sent:', data)
-    await client_sock.send_all(bytes(data))
+    await client_sock.send_all(lvs.send(data))
 
 
-async def receiver(client_sock: trio.SocketStream):
+async def receiver(client_sock: trio.SocketStream, lvs:_sansio.LVS):
     _data = await client_sock.receive_some(alsdac.BUFSIZE)
 
     expcols, exprows = alsdac.stream_size(_data)
@@ -175,7 +175,7 @@ async def receiver(client_sock: trio.SocketStream):
             _data += await client_sock.receive_some(alsdac.BUFSIZE)
     result = _data
     print('received:', str(_data, alsdac.ENCODING).strip())
-    return result
+    return lvs.recv(result)
 
 
 class Beamline(PVGroup):
@@ -184,6 +184,7 @@ class Beamline(PVGroup):
         self._lock = threading.Lock()
         self._socket = None
         self._socket_stream = None
+        self.lvs = _sansio.LVS(_sansio.Role.CLIENT)
 
     async def startup_socket(self):
         if not self._socket:  # TODO: check with Kevan about why the socket is closed
@@ -205,8 +206,8 @@ class Beamline(PVGroup):
         with self._lock:
             await self.startup_socket()
             print('socket:', self._socket)
-            await sender(self._socket_stream, cmd)
-            result = await receiver(self._socket_stream)
+            await sender(self._socket_stream, self.lvs, cmd)
+            result = await receiver(self._socket_stream, self.lvs)
             return result
 
     @SubGroup(prefix='instruments:')
