@@ -42,6 +42,10 @@ class DynamicLVGroup(LVGroup):
         self.out_db.update(self._pvdb)
         print('updated:', self._pvdb)
 
+    @devices.startup
+    async def devices(self, instance, async_lib):
+        await self.update()
+
     @devices.getter
     async def devices(self, instance):
         await self.update()
