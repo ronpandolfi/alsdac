@@ -7,12 +7,42 @@ import alsdac
 import time
 import numpy as np
 import trio
+from alsdac import _sansio
+import socket
+
 
 class LVGroup(PVGroup):
+
     @property
-    def devicename(self)->str:
+    def devicename(self) -> str:
         return self.prefix.split(':')[-1].split('.')[0]
 
+
+class DynamicLVGroup(LVGroup):
+    device_list_message_cls = None
+    device_cls = None
+    devices = pvproperty(value=[], dtype=str)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._pvdb = {}
+        self.out_db = {}
+        self.out_db.update(self.pvdb)
+
+    async def update(self):
+        device_names = await self.parent.get(self.device_list_message_cls())
+        self._pvdb.clear()
+        self._pvdb.update({f'{name}': self.device_cls(name)
+                           for name in device_names})
+        self.out_db.clear()
+        self.out_db.update(self.pvdb)
+        self.out_db.update(self._pvdb)
+        print('updated:', self._pvdb)
+
+    @devices.getter
+    async def devices(self, instance):
+        await self.update()
+        return list(self._pvdb.keys())
 
 
 class Instrument(LVGroup):
@@ -30,7 +60,7 @@ class Instrument(LVGroup):
 
     @trigger.putter
     async def trigger(self, instance, value):
-        alsdac.StartInstrumentAcquire(self.devicename, self.exposure_time)
+        await self.parent.parent.get(_sansio.StartInstrumentAcquireRequest(self.devicename, self.exposure_time))
         self.last_capture = None
 
     @read.getter
@@ -54,7 +84,7 @@ class Instrument(LVGroup):
 
     @staticmethod
     def reduce_to_scalar(image):
-        shape=image.shape
+        shape = image.shape
         return image[shape[0] // 2 - 2:shape[0] // 2 + 2, shape[1] // 2 - 2:shape[1] // 2 + 2].sum()
 
 
@@ -113,7 +143,7 @@ class Motor(LVGroup):  # MotorFields
             if self.MOVN.value[0]:
                 while True:
                     _, rbv = await self.RBV.read(ChannelType.FLOAT)
-                    if abs(instance.value[0]-rbv[0]) < 0.0001:  # Threshold
+                    if abs(instance.value[0] - rbv[0]) < 0.0001:  # Threshold
                         await self.MOVN.write([False])
                         break
 
@@ -122,7 +152,7 @@ class Motor(LVGroup):  # MotorFields
 
     @RBV.getter
     async def RBV(self, instance):
-        return alsdac.GetMotorPos_async(self.devicename, get=self.parent.parent.get)
+        return self.parent.parent.get(_sansio.GetMotorPosResponse(self.devicename))
 
 
 async def sender(client_sock, data):
@@ -131,7 +161,8 @@ async def sender(client_sock, data):
     print('sent:', data.strip())
     await client_sock.send_all(bytes(data, alsdac.ENCODING))
 
-async def receiver(client_sock:trio.SocketStream):
+
+async def receiver(client_sock: trio.SocketStream):
     _data = await client_sock.receive_some(alsdac.BUFSIZE)
 
     expcols, exprows = alsdac.stream_size(_data)
@@ -147,76 +178,63 @@ async def receiver(client_sock:trio.SocketStream):
 class Beamline(PVGroup):
     def __init__(self, *args, **kwargs):
         super(Beamline, self).__init__(*args, **kwargs)
-        self._socket = trio.socket.socket()
         self._lock = trio.Lock()
+        self._socket = None
         self._socket_stream = None
 
+    async def startup_socket(self):
+        if not self._socket:  # TODO: check with Kevan about why the socket is closed
+            self._socket = trio.socket.socket()
+            await self._socket.connect((alsdac.SERVER_ADDRESS, alsdac.PORT))
+            self._socket_stream = trio.SocketStream(self._socket)
 
-    dummy = pvproperty()
+            self._socket_stream.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            self._socket_stream.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 1)
+            self._socket_stream.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, .1)
+            self._socket_stream.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 10)
+            self._socket_stream.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
-    @dummy.startup
-    def dummy(self, instance, async_lib):
-        await self._socket.connect((alsdac.SERVER_ADDRESS, alsdac.PORT))
-        self._socket_stream = trio.SocketStream(self._socket)
+    def __del__(self):
+        self._socket.close()
+        print('closed')
 
     async def get(self, cmd):
         with self._lock:
-            await sender(self._socket_stream, cmd)
-            result = await receiver(self._socket_stream)
+            await self.startup_socket()
+            print('socket:', self._socket)
+            await sender(await self._socket_stream, cmd)
+            result = await receiver(await self._socket_stream)
             return result
 
-
     @SubGroup(prefix='instruments:')
-    class Detectors(LVGroup):
-        names = alsdac.ListInstruments()
-        for name in names:
-            locals()[name] = SubGroup(Instrument, prefix=name + '.')
-
-        devices = pvproperty(value=[], dtype=str)
-
-        @devices.getter
-        async def devices(self, instance):
-            return list(alsdac.ListInstruments())
+    class Detectors(DynamicLVGroup):
+        device_list_message_cls = _sansio.ListInstrumentsRequest
+        device_cls = Instrument
 
     @SubGroup(prefix='ais:')
-    class AnalogInputs(LVGroup):
-        names = alsdac.ListAIs()
-        for name in names:
-            locals()[name] = SubGroup(AnalogInput, prefix=name + '.')
-
-        devices = pvproperty(value=[], dtype=str)
-
-        @devices.getter
-        async def devices(self, instance):
-            return list(alsdac.ListAIs())
+    class AnalogInputs(DynamicLVGroup):
+        device_list_message_cls = _sansio.ListAIsRequest
+        device_cls = AnalogInput
 
     @SubGroup(prefix='dios:')
-    class DigitalInputOutputs(LVGroup):
-        names = alsdac.ListDIOs()
-        for name in names:
-            locals()[name] = SubGroup(DigitalInputOutput, prefix=name + '.')
-
-        devices = pvproperty(value=[], dtype=str)
-
-        @devices.getter
-        async def devices(self, instance):
-            return list(alsdac.ListDIOs())
-
+    class DigitalInputOutputs(DynamicLVGroup):
+        device_list_message_cls = _sansio.ListDIOsRequest
+        device_cls = DigitalInputOutput
 
     @SubGroup(prefix='motors:')
-    class Motors(LVGroup):
-        names = alsdac.ListMotors()
-        for name in names:
-            locals()[name] = SubGroup(Motor, prefix=name + '.')
-
-        devices = pvproperty(value=[], dtype=str)
-
-        @devices.getter
-        async def devices(self, instance):
-            return list(alsdac.ListMotors())
+    class Motors(DynamicLVGroup):
+        device_list_message_cls = _sansio.ListMotorsRequest
+        device_cls = Motor
 
 
 if __name__ == '__main__':
+    import sys
+
+    if '--address' in sys.argv:
+        alsdac.set_server_address(sys.argv['--address'])
+    if '--port' in sys.argv:
+        alsdac.set_port(sys.argv['--port'])
+
     ioc_options, run_options = ioc_arg_parser(
         default_prefix='beamline:',
         desc='als test')
