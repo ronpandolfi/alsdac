@@ -4,13 +4,49 @@ from caproto.server import (pvproperty, PVGroup, SubGroup,
 from caproto._dbr import ChannelType
 
 import alsdac
+import time
 import numpy as np
+import trio
+from alsdac import _sansio
+import socket
+import threading
+from caproto.trio.server import Context
+import logging
+
 
 class LVGroup(PVGroup):
+
     @property
-    def devicename(self)->str:
+    def devicename(self) -> str:
         return self.prefix.split(':')[-1].split('.')[0]
 
+
+class DynamicLVGroup(LVGroup):
+    device_list_message_cls = None
+    device_cls = None
+    devices = pvproperty(value=[], dtype=ChannelType.STRING, max_length=1000)
+
+    # NOTE: TRIO is not magical enough :(
+    # TODO: Make this work
+    # @devices.startup
+    # async def devices(self, instance, async_lib):
+    #     'Periodically check for new devices'
+    #
+    #     while True:
+    #         await async_lib.library.sleep(4)
+    #         await self.update()
+
+    async def update(self):
+        device_names = (await self.parent.get(self.device_list_message_cls())).data
+        for name in device_names:
+            device = self.device_cls(name, parent=self)
+            self.parent.pvdb.update({f'{self.prefix}{name}.{key}':value for key, value in device.attr_pvdb.items()})
+        print('updated:', self.parent.pvdb)
+
+    @devices.getter
+    async def devices(self, instance):
+        await self.update()
+        return list(self.parent.pvdb.keys())
 
 
 class Instrument(LVGroup):
@@ -28,7 +64,7 @@ class Instrument(LVGroup):
 
     @trigger.putter
     async def trigger(self, instance, value):
-        alsdac.StartInstrumentAcquire(self.devicename, self.exposure_time)
+        await self.parent.parent.get(_sansio.StartInstrumentAcquireRequest(self.devicename, self.exposure_time))
         self.last_capture = None
 
     @read.getter
@@ -52,7 +88,7 @@ class Instrument(LVGroup):
 
     @staticmethod
     def reduce_to_scalar(image):
-        shape=image.shape
+        shape = image.shape
         return image[shape[0] // 2 - 2:shape[0] // 2 + 2, shape[1] // 2 - 2:shape[1] // 2 + 2].sum()
 
 
@@ -85,15 +121,16 @@ class Motor(LVGroup):  # MotorFields
     HOMF = pvproperty(value=[0], dtype=float)
     HOMR = pvproperty(value=[0], dtype=float)
     EGU = pvproperty(value='units', dtype=str)
-    VAL = pvproperty(value=[0], dtype=float, precision=3)
+    VAL = pvproperty(dtype=float, precision=3)
     PREC = pvproperty(value=[3], dtype=int)
-    RBV = pvproperty(value=[0], dtype=float, precision=3)
+    RBV = pvproperty(dtype=float, precision=3)
+
 
     @VAL.putter
     async def VAL(self, instance, value):
         await self.MOVN.write([True])
-        alsdac.MoveMotor(self.devicename, value[0])
-
+        # alsdac.MoveMotor(self.devicename, value[0])
+        await self.parent.parent.get(_sansio.MoveMotorRequest(self.devicename, value))
     # TODO: LABVIEW TCP interface has no command to get the setpoint; request this addition; fill in getter
 
     # # TODO: And the readback getter
@@ -111,7 +148,7 @@ class Motor(LVGroup):  # MotorFields
             if self.MOVN.value[0]:
                 while True:
                     _, rbv = await self.RBV.read(ChannelType.FLOAT)
-                    if abs(instance.value[0]-rbv[0]) < 0.0001:  # Threshold
+                    if abs(instance.value[0] - rbv[0]) < 0.0001:  # Threshold
                         await self.MOVN.write([False])
                         break
 
@@ -120,66 +157,99 @@ class Motor(LVGroup):  # MotorFields
 
     @RBV.getter
     async def RBV(self, instance):
-        return alsdac.GetMotorPos(self.devicename)
+        return self.parent.parent.get(_sansio.GetMotorPosResponse(self.devicename))
 
+
+async def sender(client_sock, lvs:_sansio.LVS, data):
+    # print("sender: started!")
+    # print("sender: sending {!r}".format(data))
+    print('sent:', data)
+    await client_sock.send_all(lvs.send(data))
+
+
+async def receiver(client_sock: trio.SocketStream, lvs:_sansio.LVS):
+    _data = []
+    _data.append(await client_sock.receive_some(alsdac.BUFSIZE))
+
+    expcols, exprows = alsdac.stream_size(_data[0])
+
+    if exprows and expcols:
+        while not _data[-1].endswith(b'\r\n\r\n'):
+            _data.append(await client_sock.receive_some(alsdac.BUFSIZE))
+
+    print('received:', str(b''.join(_data), alsdac.ENCODING).strip())
+    return lvs.recv(_data)
+
+# TODO: run update periodically
 
 class Beamline(PVGroup):
+    def __init__(self, *args, **kwargs):
+        super(Beamline, self).__init__(*args, **kwargs)
+        self._lock = threading.Lock()
+        self._socket = None
+        self._socket_stream = None
+        self.lvs = _sansio.LVS(_sansio.Role.CLIENT)
+
+    async def startup_socket(self):
+        if not self._socket:
+            self._socket = trio.socket.socket()
+            await self._socket.connect((alsdac.SERVER_ADDRESS, alsdac.PORT))
+            self._socket_stream = trio.SocketStream(self._socket)
+
+            self._socket_stream.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            self._socket_stream.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 1)
+            self._socket_stream.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 1)
+            self._socket_stream.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 10)
+            self._socket_stream.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+    async def get(self, cmd):
+        with self._lock:
+            await self.startup_socket()
+            print('socket:', self._socket)
+            await sender(self._socket_stream, self.lvs, cmd)
+            result = await receiver(self._socket_stream, self.lvs)
+            return result
+
     @SubGroup(prefix='instruments:')
-    class Detectors(LVGroup):
-        names = alsdac.ListInstruments()
-        for name in names:
-            locals()[name] = SubGroup(Instrument, prefix=name + '.')
-
-        devices = pvproperty(value=[], dtype=str)
-
-        @devices.getter
-        async def devices(self, instance):
-            return list(alsdac.ListInstruments())
+    class Detectors(DynamicLVGroup):
+        device_list_message_cls = _sansio.ListInstrumentsRequest
+        device_cls = Instrument
 
     @SubGroup(prefix='ais:')
-    class AnalogInputs(LVGroup):
-        names = alsdac.ListAIs()
-        for name in names:
-            locals()[name] = SubGroup(AnalogInput, prefix=name + '.')
-
-        devices = pvproperty(value=[], dtype=str)
-
-        @devices.getter
-        async def devices(self, instance):
-            return list(alsdac.ListAIs())
+    class AnalogInputs(DynamicLVGroup):
+        device_list_message_cls = _sansio.ListAIsRequest
+        device_cls = AnalogInput
 
     @SubGroup(prefix='dios:')
-    class DigitalInputOutputs(LVGroup):
-        names = alsdac.ListDIOs()
-        for name in names:
-            locals()[name] = SubGroup(DigitalInputOutput, prefix=name + '.')
-
-        devices = pvproperty(value=[], dtype=str)
-
-        @devices.getter
-        async def devices(self, instance):
-            return list(alsdac.ListDIOs())
-
+    class DigitalInputOutputs(DynamicLVGroup):
+        device_list_message_cls = _sansio.ListDIOsRequest
+        device_cls = DigitalInputOutput
 
     @SubGroup(prefix='motors:')
-    class Motors(LVGroup):
-        names = alsdac.ListMotors()
-        for name in names:
-            locals()[name] = SubGroup(Motor, prefix=name + '.')
+    class Motors(DynamicLVGroup):
+        device_list_message_cls = _sansio.ListMotorsRequest
+        device_cls = Motor
 
-        devices = pvproperty(value=[], dtype=str)
-
-        @devices.getter
-        async def devices(self, instance):
-            return list(alsdac.ListMotors())
-
+async def main(pvdb, log_pv_names):
+    ctx = Context(pvdb)
+    return await ctx.run(log_pv_names=log_pv_names)
 
 if __name__ == '__main__':
+    import sys
+
+    if '--address' in sys.argv:
+        alsdac.set_server_address(sys.argv['--address'])
+    if '--port' in sys.argv:
+        alsdac.set_port(sys.argv['--port'])
+
     ioc_options, run_options = ioc_arg_parser(
         default_prefix='beamline:',
         desc='als test')
     ioc = Beamline(**ioc_options)
-    run(ioc.pvdb, **run_options)
+    # run(ioc.pvdb, **run_options)
+    # logging.getLogger('caproto').setLevel('DEBUG')
+    print(run_options)
+    trio.run(main, ioc.pvdb, '--list-pvs' in sys.argv)
 
     # # Afterwards, you can connect to these devices like:
     # import os

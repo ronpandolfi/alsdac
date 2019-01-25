@@ -21,7 +21,8 @@ SEND_ENCODING = 'ascii'
 
 # SERVER_ADDRESS = "131.243.81.35"  # Dula's sample stage server
 # SERVER_ADDRESS = "131.243.81.43"  # Dula's primary BCS server
-SERVER_ADDRESS = '131.243.163.42'  # Dula's instrumentation lab server
+# SERVER_ADDRESS = '131.243.163.42'  # Dula's instrumentation lab server
+SERVER_ADDRESS = '131.243.73.36'  # COSMIC-XPCS
 
 READ_ONLY = os.environ.get('ALSDAC_READ_ONLY', True)
 
@@ -47,12 +48,15 @@ def stream_size(b):
 
 
 def get(data: str, SEND_ENCODING=SEND_ENCODING, RECEIVE_ENCODING=RECEIVE_ENCODING) -> bytes:
+# FIXME: Make sends/receives happen from a threaded hot loop,
+
+def get(data: str) -> bytes:
     """
     Starts sender and receiver asynchronous sockets. The sender sends a tcp/ip command to the LabView host system. The
     receiver waits to receive a response.
 
     """
-
+    raise IOError('Deprecation in progress...')
     async def _get(data):
         result = None
 
@@ -93,12 +97,14 @@ def get(data: str, SEND_ENCODING=SEND_ENCODING, RECEIVE_ENCODING=RECEIVE_ENCODIN
 
     return trio.run(_get, data)
 
+
 def write_required(func):
     @wraps(func)
     def execute_if_write_permitted(*args, **kwargs):
         if READ_ONLY:
-            raise PermissionError('Write access is disabled by default to prevent mishaps.\n'
-                                  'To enable write access set alsdac.READ_ONLY = False')
+            raise PermissionError(
+                'Write access is disabled by default to prevent mishaps.\n'
+                'To enable write access set alsdac.READ_ONLY = False')
         else:
             return func(*args, **kwargs)
     return execute_if_write_permitted
@@ -116,9 +122,11 @@ def AtPreset(presetname: str) -> bool:
 def AtTrajectory(trajname: str) -> bool:
     return bool(get(f'AtTrajectory({trajname})\r\n'))
 
+
 @write_required
 def DisableMotor(motorname: str) -> bool:
     return bool(get(f'DisableMotor({motorname})\r\n'))
+
 
 @write_required
 def EnableMotor(motorname: str) -> bool:
@@ -134,8 +142,11 @@ def GetMotor(motorname: str):
     return pos, hex, datetime
     # TODO: fix datetime nonsense
 
+async def GetMotorPos_async(motorname:str, get) -> float:
+    return GetMotorPos(motorname, get=get)
 
-def GetMotorPos(motorname: str) -> float:
+
+def GetMotorPos(motorname: str, get=get) -> float:
     return float(get(f'GetMotorPos({motorname})\r\n'))
 
 
@@ -144,52 +155,74 @@ def GetMotorStatus(motorname: str) -> bool:  # returns true if move complete
 
 
 def GetSoftLimits(motorname: str) -> Tuple[float, float]:
-    return tuple(map(float, get(f'GetSoftLimits({motorname})\r\n').split(b' ')))[:2]  # The 2 just makes pylint happy :)
+    # The 2 just makes pylint happy :)
+    return tuple(map(float,
+                     get(f'GetSoftLimits({motorname})\r\n').split(b' ')))[:2]
 
 
 def GetFlyingPositions(motorname: str) -> str:
-    return np.frombuffer(get(f'GetFlyingPositions({motorname})\r\n').strip(), dtype=np.single)
+    return np.frombuffer(get(f'GetFlyingPositions({motorname})\r\n').strip(),
+                         dtype=np.single)
     # TODO: confirm
 
 
 def ListMotors() -> List[str]:
-    return str(get('ListMotors\r\n'), RECEIVE_ENCODING).strip().split('\r\n')
+    names = str(get('ListMotors\r\n'), ENCODING).strip().split('\r\n')
+    if names == ['']: names = []
+    return names
 
 
 def ListPresets() -> List[str]:
-    return str(get('ListPresets\r\n'), RECEIVE_ENCODING).strip().split('\r\n')
+    names = str(get('ListPresets\r\n'), ENCODING).strip().split('\r\n')
+    if names == ['']: names = []
+    return names
 
 
 def ListTrajectories() -> List[str]:
-    return str(get('ListTrajectories\r\n'), RECEIVE_ENCODING).strip().split('\r\n')
+    names = str(get('ListTrajectories\r\n'), ENCODING).strip().split('\r\n')
+    if names == ['']: names = []
+    return names
 
 
 def NumberMotors() -> int:
     return int(get('NumberMotors\r\n'))
+
 
 @write_required
 def MoveMotor(motorname: str, pos: Union[float, int]) -> bool:
     return bool(get(f'MoveMotor({motorname}, {pos})\r\n'))
 
 @write_required
+async def MoveMotor_async(motorname: str, pos: Union[float, int], get) -> bool:
+    return MoveMotor(motorname, pos, get=get)
+
+@write_required
 def StopMotor(motorname: str):
     return get(f'StopMotor({motorname})\r\n') == b'Motor Stopped\r\n'
+
 
 @write_required
 def HomeMotor(motorname: str):
     return get(f'HomeMotor({motorname})\r\n') == b'OK!0 \r\n'
 
+
 @write_required
 def MoveToPreset(presetname: str) -> bool:
     return bool(get(f'MoveToPreset({presetname})\r\n'))
+
 
 @write_required
 def MoveToTrajectory(trajname: str) -> bool:
     return bool(get(f'MoveToTrajectory({trajname})\r\n'))
 
+
 @write_required
-def SetBreakpoints(motorname: str, first_bp: float, bp_step: float, num_points: int):
-    return get(f'SetBreakpoints({motorname}, {first_bp}, {bp_step}, {num_points})\r\n')
+def SetBreakpoints(motorname: str,
+                   first_bp: float, bp_step: float,
+                   num_points: int):
+    return get(
+        f'SetBreakpoints({motorname}, {first_bp}, {bp_step}, {num_points})\r\n'
+    )
 
 
 # def SetBreakpointRegions(motorname: str, first_bp: float, num_points: int):
@@ -207,6 +240,7 @@ def GetMotorVelocity(motorname: str) -> float:
 
 def GetOrigMotorVelocity(motorname: str) -> float:
     return float(get(f'GetOrigMotorVelocity({motorname})\r\n'))
+
 
 @write_required
 def SetMotorVelocity(motorname: str, vel: float) -> float:
@@ -226,11 +260,16 @@ def GetFreerun(ainame) -> float:
 
 
 def ListAIs() -> List[str]:
-    return str(get('ListAIs\r\n'), RECEIVE_ENCODING).strip().split('\r\n')
+    names = str(get('ListAIs\r\n'), ENCODING).strip().split('\r\n')
+    if names == ['']: names = []
+    return names
 
 
 def ListDIOs() -> List[str]:
-    return str(get('ListDIOs\r\n'), RECEIVE_ENCODING).strip().split('\r\n')
+    names = str(get('ListDIOs\r\n'), ENCODING).strip().split('\r\n')
+    if names == ['']: names = []
+    return names
+
 
 @write_required
 def StartAcquire(time: float, counts: int):
@@ -247,7 +286,10 @@ def GetInstrumentStatus(instrumentname) -> List[str]:
 
 
 def ListInstruments() -> List[str]:
-    return str(get('ListInstruments\r\n'), RECEIVE_ENCODING).strip().split('\r\n')
+    names = str(get('ListInstruments\r\n'), ENCODING).strip().split('\r\n')
+    if names == ['']: names=[]
+    return names
+
 
 @write_required
 def StartInstrumentAcquire(instrumentname, time):
