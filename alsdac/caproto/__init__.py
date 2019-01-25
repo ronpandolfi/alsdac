@@ -24,28 +24,29 @@ class LVGroup(PVGroup):
 class DynamicLVGroup(LVGroup):
     device_list_message_cls = None
     device_cls = None
-    devices = pvproperty(value=[], dtype=str)
+    devices = pvproperty(value=[], dtype=ChannelType.STRING, max_length=1000)
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._pvdb = {}
-        self.out_db = {}
-        self.out_db.update(self.pvdb)
+    # NOTE: TRIO is not magical enough :(
+    # TODO: Make this work
+    # @devices.startup
+    # async def devices(self, instance, async_lib):
+    #     'Periodically check for new devices'
+    #
+    #     while True:
+    #         await async_lib.library.sleep(4)
+    #         await self.update()
 
     async def update(self):
         device_names = (await self.parent.get(self.device_list_message_cls())).data
-        self._pvdb.clear()
-        self._pvdb.update({f'{name}': self.device_cls(name)
-                           for name in device_names})
-        self.out_db.clear()
-        self.out_db.update(self.pvdb)
-        self.out_db.update(self._pvdb)
-        print('updated:', self._pvdb)
+        for name in device_names:
+            device = self.device_cls(name, parent=self)
+            self.parent.pvdb.update({f'{self.prefix}{name}.{key}':value for key, value in device.attr_pvdb.items()})
+        print('updated:', self.parent.pvdb)
 
     @devices.getter
     async def devices(self, instance):
         await self.update()
-        return list(self._pvdb.keys())
+        return list(self.parent.pvdb.keys())
 
 
 class Instrument(LVGroup):
@@ -120,15 +121,16 @@ class Motor(LVGroup):  # MotorFields
     HOMF = pvproperty(value=[0], dtype=float)
     HOMR = pvproperty(value=[0], dtype=float)
     EGU = pvproperty(value='units', dtype=str)
-    VAL = pvproperty(value=[0], dtype=float, precision=3)
+    VAL = pvproperty(dtype=float, precision=3)
     PREC = pvproperty(value=[3], dtype=int)
-    RBV = pvproperty(value=[0], dtype=float, precision=3)
+    RBV = pvproperty(dtype=float, precision=3)
+
 
     @VAL.putter
     async def VAL(self, instance, value):
         await self.MOVN.write([True])
-        alsdac.MoveMotor(self.devicename, value[0])
-
+        # alsdac.MoveMotor(self.devicename, value[0])
+        await self.parent.parent.get(_sansio.MoveMotorRequest(self.devicename, value))
     # TODO: LABVIEW TCP interface has no command to get the setpoint; request this addition; fill in getter
 
     # # TODO: And the readback getter
@@ -166,17 +168,19 @@ async def sender(client_sock, lvs:_sansio.LVS, data):
 
 
 async def receiver(client_sock: trio.SocketStream, lvs:_sansio.LVS):
-    _data = await client_sock.receive_some(alsdac.BUFSIZE)
+    _data = []
+    _data.append(await client_sock.receive_some(alsdac.BUFSIZE))
 
-    expcols, exprows = alsdac.stream_size(_data)
+    expcols, exprows = alsdac.stream_size(_data[0])
 
     if exprows and expcols:
-        while not _data.endswith(b'\r\n\r\n'):
-            _data += await client_sock.receive_some(alsdac.BUFSIZE)
-    result = _data
-    print('received:', str(_data, alsdac.ENCODING).strip())
-    return lvs.recv(result)
+        while not _data[-1].endswith(b'\r\n\r\n'):
+            _data.append(await client_sock.receive_some(alsdac.BUFSIZE))
 
+    print('received:', str(b''.join(_data), alsdac.ENCODING).strip())
+    return lvs.recv(_data)
+
+# TODO: run update periodically
 
 class Beamline(PVGroup):
     def __init__(self, *args, **kwargs):
@@ -187,7 +191,7 @@ class Beamline(PVGroup):
         self.lvs = _sansio.LVS(_sansio.Role.CLIENT)
 
     async def startup_socket(self):
-        if not self._socket:  # TODO: check with Kevan about why the socket is closed
+        if not self._socket:
             self._socket = trio.socket.socket()
             await self._socket.connect((alsdac.SERVER_ADDRESS, alsdac.PORT))
             self._socket_stream = trio.SocketStream(self._socket)
@@ -197,10 +201,6 @@ class Beamline(PVGroup):
             self._socket_stream.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 1)
             self._socket_stream.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 10)
             self._socket_stream.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-
-    def __del__(self):
-        self._socket.close()
-        print('closed')
 
     async def get(self, cmd):
         with self._lock:
