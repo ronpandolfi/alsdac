@@ -139,6 +139,16 @@ class DisableBreakpointsResponse(Message):
         return bool(self.str_payload)
 
 
+class MoveMotorRequest(_TwoParamRequestBase):
+    __slots__ = ()
+    FNC = 'MoveMotor'
+
+
+class MoveMotorResponse(Message):
+    __slots__ = ()
+    FNC = 'MoveMotor'
+
+
 class DisableMotorRequest(_OneParamRequestBase):
     __slots__ = ()
     FNC = 'DisableMotor'
@@ -185,7 +195,7 @@ class GetFlyingPositionsResponse(Message):
 class ListResponse(Message):
     @property
     def data(self):
-        names = str(self.str_payload, ENCODING).strip().split('\r\n')
+        names = self.str_payload.strip().split('\r\n')
         if names == ['']: names = []
         return names
 
