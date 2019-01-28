@@ -47,10 +47,10 @@ def stream_size(b):
     return None, None, None
 
 
-def get(data: str, SEND_ENCODING=SEND_ENCODING, RECEIVE_ENCODING=RECEIVE_ENCODING) -> bytes:
+
 # FIXME: Make sends/receives happen from a threaded hot loop,
 
-def get(data: str) -> bytes:
+def get(data: str, SEND_ENCODING=SEND_ENCODING, RECEIVE_ENCODING=RECEIVE_ENCODING) -> bytes:
     """
     Starts sender and receiver asynchronous sockets. The sender sends a tcp/ip command to the LabView host system. The
     receiver waits to receive a response.

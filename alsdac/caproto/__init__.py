@@ -9,7 +9,6 @@ import numpy as np
 import trio
 from alsdac import _sansio
 import socket
-import threading
 from caproto.trio.server import Context, run
 import caproto as ca
 import logging
@@ -41,14 +40,6 @@ class DynamicLVGroup(LVGroup):
     async def devices(self, instance):
         await self.update()
         return list(self.parent.pvdb.keys())
-    #
-    # @devices.startup
-    # async def devices(self, instance, async_lib):
-    #     'Periodically check for new devices'
-    #
-    #     while True:
-    #         await async_lib.library.sleep(4)
-    #         await self.update()
 
 
 class Instrument(LVGroup):
@@ -173,7 +164,7 @@ async def receiver(client_sock: trio.SocketStream, lvs: _sansio.LVS):
     _data = []
     _data.append(await client_sock.receive_some(alsdac.BUFSIZE))
 
-    expcols, exprows = alsdac.stream_size(_data[0])
+    expcols, exprows, _ = alsdac.stream_size(_data[0])
 
     if exprows and expcols:
         while not _data[-1].endswith(b'\r\n\r\n'):
@@ -201,7 +192,7 @@ class DeferDict(dict):
 class Beamline(PVGroup):
     def __init__(self, *args, **kwargs):
         super(Beamline, self).__init__(*args, **kwargs)
-        self._lock = threading.Lock()
+        self._lock = trio.Lock()
         self._socket = None
         self._socket_stream = None
         self.lvs = _sansio.LVS(_sansio.Role.CLIENT)
@@ -228,7 +219,7 @@ class Beamline(PVGroup):
             self._socket_stream.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
     async def get(self, cmd):
-        with self._lock:
+        async with self._lock:
             await self.startup_socket()
             await sender(self._socket_stream, self.lvs, cmd)
             result = await receiver(self._socket_stream, self.lvs)
