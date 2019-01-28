@@ -10,7 +10,8 @@ import trio
 from alsdac import _sansio
 import socket
 import threading
-from caproto.trio.server import Context
+from caproto.trio.server import Context, run
+import caproto as ca
 import logging
 
 
@@ -26,8 +27,21 @@ class DynamicLVGroup(LVGroup):
     device_cls = None
     devices = pvproperty(value=[], dtype=ChannelType.STRING, max_length=1000)
 
-    # NOTE: TRIO is not magical enough :(
-    # TODO: Make this work
+    async def update(self):
+        device_names = (await self.parent.get(self.device_list_message_cls())).data
+        newpvs = {}
+        for name in device_names:
+            device = self.device_cls(name, parent=self)
+            newpvs.update({f'{self.prefix}{name}.{key}': value for key, value in device.attr_pvdb.items()
+                           if f'{self.prefix}{name}.{key}' not in self.pvdb})
+        self.pvdb.update(newpvs)
+        return newpvs
+
+    @devices.getter
+    async def devices(self, instance):
+        await self.update()
+        return list(self.parent.pvdb.keys())
+    #
     # @devices.startup
     # async def devices(self, instance, async_lib):
     #     'Periodically check for new devices'
@@ -35,18 +49,6 @@ class DynamicLVGroup(LVGroup):
     #     while True:
     #         await async_lib.library.sleep(4)
     #         await self.update()
-
-    async def update(self):
-        device_names = (await self.parent.get(self.device_list_message_cls())).data
-        for name in device_names:
-            device = self.device_cls(name, parent=self)
-            self.parent.pvdb.update({f'{self.prefix}{name}.{key}':value for key, value in device.attr_pvdb.items()})
-        print('updated:', self.parent.pvdb)
-
-    @devices.getter
-    async def devices(self, instance):
-        await self.update()
-        return list(self.parent.pvdb.keys())
 
 
 class Instrument(LVGroup):
@@ -125,12 +127,12 @@ class Motor(LVGroup):  # MotorFields
     PREC = pvproperty(value=[3], dtype=int)
     RBV = pvproperty(dtype=float, precision=3)
 
-
     @VAL.putter
     async def VAL(self, instance, value):
         await self.MOVN.write([True])
         # alsdac.MoveMotor(self.devicename, value[0])
         await self.parent.parent.get(_sansio.MoveMotorRequest(self.devicename, value))
+
     # TODO: LABVIEW TCP interface has no command to get the setpoint; request this addition; fill in getter
 
     # # TODO: And the readback getter
@@ -160,14 +162,14 @@ class Motor(LVGroup):  # MotorFields
         return self.parent.parent.get(_sansio.GetMotorPosResponse(self.devicename))
 
 
-async def sender(client_sock, lvs:_sansio.LVS, data):
+async def sender(client_sock, lvs: _sansio.LVS, data):
     # print("sender: started!")
     # print("sender: sending {!r}".format(data))
-    print('sent:', data)
+    # print('sent:', data)
     await client_sock.send_all(lvs.send(data))
 
 
-async def receiver(client_sock: trio.SocketStream, lvs:_sansio.LVS):
+async def receiver(client_sock: trio.SocketStream, lvs: _sansio.LVS):
     _data = []
     _data.append(await client_sock.receive_some(alsdac.BUFSIZE))
 
@@ -177,10 +179,24 @@ async def receiver(client_sock: trio.SocketStream, lvs:_sansio.LVS):
         while not _data[-1].endswith(b'\r\n\r\n'):
             _data.append(await client_sock.receive_some(alsdac.BUFSIZE))
 
-    print('received:', str(b''.join(_data), alsdac.ENCODING).strip())
+    # print('received:', str(b''.join(_data), alsdac.ENCODING).strip())
     return lvs.recv(_data)
 
+
 # TODO: run update periodically
+
+class DeferDict(dict):
+    def __init__(self, *args, **kwargs):
+        super(DeferDict, self).__init__(*args, **kwargs)
+        self.defer_to = []
+        self.filter = ''
+
+    def __missing__(self, key):
+        if self.filter in key:
+            for group in self.defer_to:
+                if group.prefix in key:
+                    return group.pvdb[key]
+
 
 class Beamline(PVGroup):
     def __init__(self, *args, **kwargs):
@@ -189,6 +205,15 @@ class Beamline(PVGroup):
         self._socket = None
         self._socket_stream = None
         self.lvs = _sansio.LVS(_sansio.Role.CLIENT)
+
+        # Make pvdb defer to subgroups
+        self.pvdb = DeferDict()
+        self.pvdb.filter = self.prefix
+        self.pvdb.defer_to = [self.Motors, self.Detectors, self.AnalogInputs, self.DigitalInputOutputs]
+
+    async def update(self):
+        for group in self.Detectors, self.AnalogInputs, self.DigitalInputOutputs, self.Motors:
+            await group.update()  # Ignore introspection warning
 
     async def startup_socket(self):
         if not self._socket:
@@ -205,7 +230,6 @@ class Beamline(PVGroup):
     async def get(self, cmd):
         with self._lock:
             await self.startup_socket()
-            print('socket:', self._socket)
             await sender(self._socket_stream, self.lvs, cmd)
             result = await receiver(self._socket_stream, self.lvs)
             return result
@@ -230,9 +254,24 @@ class Beamline(PVGroup):
         device_list_message_cls = _sansio.ListMotorsRequest
         device_cls = Motor
 
-async def main(pvdb, log_pv_names):
-    ctx = Context(pvdb)
+
+class DynamicContext(Context):
+    def __init__(self, update, *args, **kwargs):
+        super(DynamicContext, self).__init__(*args, **kwargs)
+        self._devices_inited = False
+        self.update = update
+
+    async def _broadcaster_evaluate(self, addr, commands):
+        if not self._devices_inited:
+            await self.update()
+            self._devices_inited = True
+        await super(DynamicContext, self)._broadcaster_evaluate(addr, commands)
+
+
+async def main(update, pvdb, log_pv_names):
+    ctx = DynamicContext(update, pvdb)
     return await ctx.run(log_pv_names=log_pv_names)
+
 
 if __name__ == '__main__':
     import sys
@@ -249,7 +288,7 @@ if __name__ == '__main__':
     # run(ioc.pvdb, **run_options)
     # logging.getLogger('caproto').setLevel('DEBUG')
     print(run_options)
-    trio.run(main, ioc.pvdb, '--list-pvs' in sys.argv)
+    trio.run(main, ioc.update, ioc.pvdb, '--list-pvs' in sys.argv)
 
     # # Afterwards, you can connect to these devices like:
     # import os
