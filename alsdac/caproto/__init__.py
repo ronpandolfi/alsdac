@@ -39,7 +39,7 @@ class DynamicLVGroup(LVGroup):
     @devices.getter
     async def devices(self, instance):
         await self.update()
-        return list(self.parent.pvdb.keys())
+        return list(self.pvdb.keys())
 
 
 class Instrument(LVGroup):
