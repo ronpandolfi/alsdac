@@ -150,7 +150,7 @@ class Motor(LVGroup):  # MotorFields
 
     @RBV.getter
     async def RBV(self, instance):
-        return self.parent.parent.get(_sansio.GetMotorPosResponse(self.devicename))
+        return await self.parent.parent.get(_sansio.GetMotorPosResponse(self.devicename))
 
 
 async def sender(client_sock, lvs: _sansio.LVS, data):
