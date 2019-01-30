@@ -13,6 +13,11 @@ from caproto.trio.server import Context, run
 import caproto as ca
 import logging
 
+logger = logging.getLogger('cosmic')
+logFormatter = logging.Formatter("%(asctime)s [%(threadName)-12.12s] [%(levelname)-5.5s]%(message)s")
+consoleHandler = logging.StreamHandler()
+consoleHandler.setFormatter(logFormatter)
+logger.addHandler(consoleHandler)
 
 class LVGroup(PVGroup):
 
@@ -90,8 +95,8 @@ class AnalogInput(LVGroup):  # AIFields
 
     @value.getter
     async def value(self, instance):
-        return alsdac.GetFreerun(self.devicename)
-
+        value = (await self.parent.parent.get(_sansio.GetFreerunRequest(self.devicename))).data
+        return value
 
 class DigitalInputOutput(AnalogInput):  # DigitalFields
     pass
@@ -150,13 +155,14 @@ class Motor(LVGroup):  # MotorFields
 
     @RBV.getter
     async def RBV(self, instance):
-        return await self.parent.parent.get(_sansio.GetMotorPosResponse(self.devicename))
+        value = (await self.parent.parent.get(_sansio.GetMotorPosRequest(self.devicename))).data
+        return value
 
 
 async def sender(client_sock, lvs: _sansio.LVS, data):
     # print("sender: started!")
     # print("sender: sending {!r}".format(data))
-    # print('sent:', data)
+    logger.info('packet sent:'+data.str_payload)
     await client_sock.send_all(lvs.send(data))
 
 
@@ -170,7 +176,7 @@ async def receiver(client_sock: trio.SocketStream, lvs: _sansio.LVS):
         while not _data[-1].endswith(b'\r\n\r\n'):
             _data.append(await client_sock.receive_some(alsdac.BUFSIZE))
 
-    # print('received:', str(b''.join(_data), alsdac.ENCODING).strip())
+    logger.info('packet received:'+str(b''.join(_data), alsdac.RECEIVE_ENCODING).strip())
     return lvs.recv(_data)
 
 
@@ -186,6 +192,7 @@ class DeferDict(dict):
         if self.filter in key:
             for group in self.defer_to:
                 if group.prefix in key:
+                    logger.info(f'Deferring {key} to {group.name}')
                     return group.pvdb[key]
 
 
@@ -267,6 +274,9 @@ async def main(update, pvdb, log_pv_names):
 if __name__ == '__main__':
     import sys
 
+    logger.setLevel('INFO')
+    logging.getLogger('caproto').setLevel('WARNING')
+
     if '--address' in sys.argv:
         alsdac.set_server_address(sys.argv['--address'])
     if '--port' in sys.argv:
@@ -277,7 +287,7 @@ if __name__ == '__main__':
         desc='als test')
     ioc = Beamline(**ioc_options)
     # run(ioc.pvdb, **run_options)
-    # logging.getLogger('caproto').setLevel('DEBUG')
+    
     print(run_options)
     trio.run(main, ioc.update, ioc.pvdb, '--list-pvs' in sys.argv)
 
