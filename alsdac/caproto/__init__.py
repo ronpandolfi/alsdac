@@ -12,6 +12,8 @@ import socket
 from caproto.trio.server import Context, run
 import caproto as ca
 import logging
+from caproto.server import records
+from caproto._data import ChannelAlarm
 
 logger = logging.getLogger('cosmic')
 logFormatter = logging.Formatter("%(asctime)s [%(threadName)-12.12s] [%(levelname)-5.5s]%(message)s")
@@ -29,15 +31,17 @@ class LVGroup(PVGroup):
 class DynamicLVGroup(LVGroup):
     device_list_message_cls = None
     device_cls = None
-    devices = pvproperty(value=[], dtype=ChannelType.STRING, max_length=1000)
+    devices = pvproperty(value=[], dtype=ChannelType.STRING, max_length=10000)
 
     async def update(self):
         device_names = (await self.parent.get(self.device_list_message_cls())).data
         newpvs = {}
         for name in device_names:
             device = self.device_cls(name, parent=self)
-            newpvs.update({f'{self.prefix}{name}.{key}': value for key, value in device.attr_pvdb.items()
+            newpvs.update({f'{self.prefix}{name}.{value.pvspec.name}': value for key, value in device.attr_pvdb.items()
                            if f'{self.prefix}{name}.{key}' not in self.pvdb})
+            # newpvs.update({f'{self.prefix}{name}.{key}': value for key, value in device.attr_pvdb.items()
+            #                if f'{self.prefix}{name}.{key}' not in self.pvdb})
         self.pvdb.update(newpvs)
         return newpvs
 
@@ -90,48 +94,46 @@ class Instrument(LVGroup):
         return image[shape[0] // 2 - 2:shape[0] // 2 + 2, shape[1] // 2 - 2:shape[1] // 2 + 2].sum()
 
 
-class AnalogInput(LVGroup):  # AIFields
-    value = pvproperty(value=[0], dtype=float, read_only=True)
+# TODO: add AnalogInput Ophyd device
+class AnalogInput(records.AiFields, LVGroup):
+    # overridden methods require overridden pvproperties
+    current_raw_value = pvproperty(name='RVAL', dtype=ChannelType.LONG, doc='Current Raw Value')
 
-    @value.getter
-    async def value(self, instance):
+    @current_raw_value.getter
+    async def current_raw_value(self, instance):
         value = (await self.parent.parent.get(_sansio.GetFreerunRequest(self.devicename))).data
         return value
 
 class DigitalInputOutput(AnalogInput):  # DigitalFields
-    pass
+    # def __init__(self, *args, **kwargs):
+    #     raise NotImplementedError('DIOs are not yet implemented.')
+    ...
+
+# TODO: find spec matching DIOs in EPICS
 
 
-class Motor(LVGroup):  # MotorFields
-    # FIXME: most of these don't actually do anything
-    OFF = pvproperty(value=[0], dtype=float)
-    DIR = pvproperty(value=[0], dtype=float)
-    FOFF = pvproperty(value=[0], dtype=float)
-    SET = pvproperty(value=[0], dtype=float)
-    VELO = pvproperty(value=[0], dtype=float)
-    ACCL = pvproperty(value=[0], dtype=float)
-    MOVN = pvproperty(value=[False], dtype=bool)
-    DMOV = pvproperty(value=[0], dtype=float)
-    HLS = pvproperty(value=[0], dtype=float)
-    LLS = pvproperty(value=[0], dtype=float)
-    TDIR = pvproperty(value=[0], dtype=float)
-    STOP = pvproperty(value=[0], dtype=float)
-    HOMF = pvproperty(value=[0], dtype=float)
-    HOMR = pvproperty(value=[0], dtype=float)
-    EGU = pvproperty(value='units', dtype=str)
-    VAL = pvproperty(dtype=float, precision=3)
-    PREC = pvproperty(value=[3], dtype=int)
-    RBV = pvproperty(dtype=float, precision=3)
+class Motor(records.MotorFields, LVGroup):  # MotorFields
+    value = pvproperty(name='VAL', dtype=float, precision=3)
+    user_readback_value = pvproperty(name='RBV',
+                                     dtype=ChannelType.DOUBLE,
+                                     doc='User Readback Value',
+                                     read_only=True,
+                                     precision=3)
+    user_offset = pvproperty(name='OFF',
+                             dtype=ChannelType.DOUBLE,
+                             doc='User Offset (EGU)',
+                             read_only=False)
 
-    @VAL.putter
-    async def VAL(self, instance, value):
+
+    @value.putter
+    async def value(self, instance, value):
         await self.MOVN.write([True])
         # alsdac.MoveMotor(self.devicename, value[0])
         await self.parent.parent.get(_sansio.MoveMotorRequest(self.devicename, value))
 
     # TODO: LABVIEW TCP interface has no command to get the setpoint; request this addition; fill in getter
 
-    # # TODO: And the readback getter
+    # # TODO: And the VAL getter
     # @VAL.getter
     # async def VAL(obj, instance):
     #     # NOTE: this is effectively a no-operation method
@@ -139,13 +141,13 @@ class Motor(LVGroup):  # MotorFields
     #     # will be returned automatically
     #     return obj._value
 
-    @VAL.startup
-    async def VAL(self, instance, async_lib):
+    @value.startup
+    async def value(self, instance, async_lib):
         'Periodically check if at setpoint'
         while True:
             if self.MOVN.value[0]:
                 while True:
-                    _, rbv = await self.RBV.read(ChannelType.FLOAT)
+                    _, rbv = await self.user_readback_value.read(ChannelType.FLOAT)
                     if abs(instance.value[0] - rbv[0]) < 0.0001:  # Threshold
                         await self.MOVN.write([False])
                         break
@@ -153,8 +155,8 @@ class Motor(LVGroup):  # MotorFields
                     await async_lib.library.sleep(.1)
             await async_lib.library.sleep(.1)
 
-    @RBV.getter
-    async def RBV(self, instance):
+    @user_readback_value.getter
+    async def user_readback_value(self, instance):
         value = (await self.parent.parent.get(_sansio.GetMotorPosRequest(self.devicename))).data
         return value
 
@@ -234,21 +236,29 @@ class Beamline(PVGroup):
 
     @SubGroup(prefix='instruments:')
     class Detectors(DynamicLVGroup):
+        pvname='Detectors'
+        alarm=ChannelAlarm()
         device_list_message_cls = _sansio.ListInstrumentsRequest
         device_cls = Instrument
 
     @SubGroup(prefix='ais:')
     class AnalogInputs(DynamicLVGroup):
+        pvname = 'AnalogInput'
+        alarm = ChannelAlarm()
         device_list_message_cls = _sansio.ListAIsRequest
         device_cls = AnalogInput
 
     @SubGroup(prefix='dios:')
     class DigitalInputOutputs(DynamicLVGroup):
+        pvname='DigitalInputOutputs'
+        alarm = ChannelAlarm()
         device_list_message_cls = _sansio.ListDIOsRequest
         device_cls = DigitalInputOutput
 
     @SubGroup(prefix='motors:')
     class Motors(DynamicLVGroup):
+        pvname='Motors'
+        alarm = ChannelAlarm()
         device_list_message_cls = _sansio.ListMotorsRequest
         device_cls = Motor
 
